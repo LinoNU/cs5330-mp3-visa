@@ -1,0 +1,17 @@
+# Original VisA release (~1.8 GB): never commit
+raw/
+*.tar
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store

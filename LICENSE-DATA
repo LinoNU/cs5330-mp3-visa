@@ -1,0 +1,20 @@
+Data licence
+
+The images and masks in the data/ folder are a modified version of the
+Visual Anomaly (VisA) dataset by Yang Zou, Jongheon Jeong, Latha Pemula,
+Dongqing Zhang, and Onkar Dabeer, released by Amazon under the Creative
+Commons Attribution 4.0 International licence (CC BY 4.0):
+https://creativecommons.org/licenses/by/4.0/
+
+Original source: https://github.com/amazon-science/spot-diff
+
+Changes made for CS 5330 (Northeastern University):
+  - Selected six subsets: cashew, macaroni1, chewinggum, fryum, pipe_fryum, macaroni2
+  - Resampled each subset into new reference, dev, and test splits
+  - Resized images and masks so the longer side is 512 px
+  - Converted masks to binary (0 = normal, 255 = anomaly)
+  - Re-encoded images as JPEG and removed all metadata
+
+The modified data in data/ is also released under CC BY 4.0.
+
+This licence covers the data only. The code in this repository is licensed separately.

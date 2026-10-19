@@ -1,0 +1,5 @@
+# Needed only to regenerate the curated dataset (scripts/prepare_visa.py).
+# Python 3.11 or later.
+numpy==2.4.4
+pandas==3.0.2
+Pillow==12.1.1
