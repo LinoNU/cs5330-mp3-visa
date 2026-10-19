@@ -61,6 +61,7 @@ MANIFEST_COLUMNS: list[str] = [
     "subset",
     "split",
     "label",
+    "defect_type",
     "image_path",
     "mask_path",
     "width",
@@ -83,6 +84,7 @@ class SourceImage:
     image_path: Path
     mask_path: Path | None
     original_name: str  # path relative to the release root, for traceability
+    defect_type: str  # defect description from image_anno.csv; "" for normal images
 
 
 # ---------------------------------------------------------------------------
@@ -104,30 +106,38 @@ def discover_subset(raw_dir: Path, subset: str) -> list[SourceImage]:
     data_dir = raw_dir / subset / "Data"
     normal_images = _list_images(data_dir / "Images" / "Normal")
     anomaly_images = _list_images(data_dir / "Images" / "Anomaly")
-    mask_dir = data_dir / "Masks" / "Anomaly"
-
-    masks_by_stem = {p.stem: p for p in _list_images(mask_dir)}
+    masks_by_stem = {p.stem: p for p in _list_images(data_dir / "Masks" / "Anomaly")}
+    annotations = load_annotations(raw_dir, subset)
 
     def original_name(path: Path) -> str:
         return path.relative_to(raw_dir).as_posix()
 
     sources = [
-        SourceImage(subset, "normal", p, None, original_name(p)) for p in normal_images
+        SourceImage(subset, "normal", p, None, original_name(p), "") for p in normal_images
     ]
     missing_masks: list[str] = []
+    missing_annotations: list[str] = []
     for image_path in anomaly_images:
+        name = original_name(image_path)
         mask_path = masks_by_stem.get(image_path.stem)
+        defect_type = annotations.get(name)
         if mask_path is None:
             missing_masks.append(image_path.name)
+        if defect_type is None or defect_type.lower() == "normal":
+            missing_annotations.append(image_path.name)
+        if mask_path is None or defect_type is None:
             continue
-        sources.append(
-            SourceImage(subset, "anomaly", image_path, mask_path, original_name(image_path))
-        )
+        sources.append(SourceImage(subset, "anomaly", image_path, mask_path, name, defect_type))
 
     if missing_masks:
         raise ValidationError(
             f"{subset}: {len(missing_masks)} anomalous images have no mask, "
             f"e.g. {missing_masks[:5]}"
+        )
+    if missing_annotations:
+        raise ValidationError(
+            f"{subset}: {len(missing_annotations)} anomalous images have no defect label "
+            f"in image_anno.csv, e.g. {missing_annotations[:5]}"
         )
 
     LOGGER.info(
@@ -136,28 +146,39 @@ def discover_subset(raw_dir: Path, subset: str) -> list[SourceImage]:
         len(normal_images),
         len(anomaly_images),
     )
-    _cross_check_annotation_csv(raw_dir / subset, len(normal_images), len(anomaly_images))
+    _cross_check_counts(subset, annotations, len(normal_images), len(anomaly_images))
     return sources
 
 
-def _cross_check_annotation_csv(subset_dir: Path, n_normal: int, n_anomaly: int) -> None:
-    """Compare folder counts with the release's image_anno.csv, if present."""
-    csv_path = subset_dir / "image_anno.csv"
+def load_annotations(raw_dir: Path, subset: str) -> dict[str, str]:
+    """Read image_anno.csv and map each image path to its label.
+
+    Normal rows are labelled "normal"; anomalous rows carry a defect-type
+    description (e.g. "burnt", "small scratches"). Image paths in the CSV are
+    relative to the release root, matching ``SourceImage.original_name``.
+    """
+    csv_path = raw_dir / subset / "image_anno.csv"
     if not csv_path.is_file():
-        LOGGER.warning("%s: no image_anno.csv found; skipping cross-check", subset_dir.name)
-        return
-    annotations = pd.read_csv(csv_path)
-    if "label" not in annotations.columns:
-        LOGGER.warning("%s: image_anno.csv has no 'label' column", subset_dir.name)
-        return
-    # Anomalous rows carry defect-type names (e.g. "burnt", "small scratches"),
-    # so anything that is not "normal" counts as anomalous.
-    is_normal = annotations["label"].astype(str).str.strip().str.lower() == "normal"
-    csv_normal = int(is_normal.sum())
-    csv_anomaly = int((~is_normal).sum())
+        raise FileNotFoundError(f"Expected annotation file not found: {csv_path}")
+    annotations = pd.read_csv(csv_path, dtype=str, keep_default_na=False)
+    missing_columns = {"image", "label"} - set(annotations.columns)
+    if missing_columns:
+        raise ValidationError(f"{csv_path}: missing column(s) {sorted(missing_columns)}")
+    return {
+        Path(image).as_posix(): label.strip()
+        for image, label in zip(annotations["image"], annotations["label"], strict=True)
+    }
+
+
+def _cross_check_counts(
+    subset: str, annotations: dict[str, str], n_normal: int, n_anomaly: int
+) -> None:
+    """Compare folder counts with the number of normal / anomalous CSV rows."""
+    csv_normal = sum(label.lower() == "normal" for label in annotations.values())
+    csv_anomaly = len(annotations) - csv_normal
     if (csv_normal, csv_anomaly) != (n_normal, n_anomaly):
         raise ValidationError(
-            f"{subset_dir.name}: folders contain {n_normal} normal / {n_anomaly} anomalous "
+            f"{subset}: folders contain {n_normal} normal / {n_anomaly} anomalous "
             f"images but image_anno.csv lists {csv_normal} / {csv_anomaly}"
         )
 
@@ -276,6 +297,7 @@ def write_subset(
                     "subset": subset,
                     "split": split_name,
                     "label": source.label,
+                    "defect_type": source.defect_type,
                     "image_path": image_out.relative_to(path_root).as_posix(),
                     "mask_path": mask_out.relative_to(path_root).as_posix() if mask_out else "",
                     "width": width,
@@ -325,8 +347,12 @@ def validate_output(manifest: pd.DataFrame, path_root: Path) -> None:
         if row.label == "normal":
             if row.mask_path:
                 errors.append(f"{row.image_path}: normal image has a mask")
+            if row.defect_type:
+                errors.append(f"{row.image_path}: normal image has a defect type")
             continue
 
+        if not row.defect_type:
+            errors.append(f"{row.image_path}: anomalous image has no defect type")
         if not row.mask_path:
             errors.append(f"{row.image_path}: anomalous image has no mask")
             continue
@@ -377,6 +403,14 @@ def log_summary(manifest: pd.DataFrame) -> None:
         .astype(int)
     )
     LOGGER.info("Image counts:\n%s", table.to_string())
+
+    defect_counts = (
+        manifest[manifest["label"] == "anomaly"]
+        .groupby(["subset", "defect_type"])
+        .size()
+        .rename("images")
+    )
+    LOGGER.info("Defect types (dev + test):\n%s", defect_counts.to_string())
 
 
 # ---------------------------------------------------------------------------
